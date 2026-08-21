@@ -27,6 +27,7 @@ from .client import (
     FH3XError,
     FH3XModbusClient,
     FH3XProtocolError,
+    FH3XTransport,
 )
 
 __all__ = [
@@ -37,6 +38,7 @@ __all__ = [
     "FH3XModbusClient",
     "FH3XProtocolError",
     "FH3XSnapshot",
+    "FH3XTransport",
     "FH3XValue",
     "TotalIncreasingGuard",
     "decode_active_power_controls",

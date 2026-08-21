@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import replace
+from typing import Any, Protocol
 
 from pymodbus.client import AsyncModbusTcpClient
 from pymodbus.exceptions import ModbusException
@@ -86,6 +87,38 @@ class FH3XProtocolError(FH3XError):
     """Raised when the FH3X returns an invalid Modbus response."""
 
 
+class FH3XTransport(Protocol):
+    """Minimal async Modbus transport required by the FH3X client."""
+
+    connected: bool
+
+    async def connect(self) -> bool:
+        """Open the transport."""
+
+    def close(self) -> None:
+        """Close the transport."""
+
+    async def read_holding_registers(
+        self, address: int, *, count: int, device_id: int
+    ) -> Any:
+        """Read holding registers."""
+
+    async def read_input_registers(
+        self, address: int, *, count: int, device_id: int
+    ) -> Any:
+        """Read input registers."""
+
+    async def write_register(
+        self, address: int, value: int, *, device_id: int
+    ) -> Any:
+        """Write one holding register."""
+
+    async def write_registers(
+        self, address: int, values: list[int], *, device_id: int
+    ) -> Any:
+        """Write holding registers."""
+
+
 class FH3XModbusClient:
     """Manage one serialized Modbus TCP connection to an FH3X."""
 
@@ -100,6 +133,7 @@ class FH3XModbusClient:
         device_switch_delay: float = DEFAULT_DEVICE_SWITCH_DELAY,
         read_retries: int = DEFAULT_READ_RETRIES,
         read_retry_delay: float = DEFAULT_READ_RETRY_DELAY,
+        transport: FH3XTransport | None = None,
     ) -> None:
         """Initialize the client."""
         self.host = host
@@ -110,7 +144,7 @@ class FH3XModbusClient:
         self.device_switch_delay = device_switch_delay
         self.read_retries = read_retries
         self.read_retry_delay = read_retry_delay
-        self._client = AsyncModbusTcpClient(
+        self._client: FH3XTransport = transport or AsyncModbusTcpClient(
             host=host,
             port=port,
             timeout=timeout,
@@ -151,8 +185,9 @@ class FH3XModbusClient:
         if self._client.connected:
             return
         try:
-            async with asyncio.timeout(self.timeout):
-                connected = await self._client.connect()
+            connected = await asyncio.wait_for(
+                self._client.connect(), timeout=self.timeout
+            )
         except (TimeoutError, OSError, ModbusException) as err:
             raise FH3XConnectionError(
                 f"Unable to connect to FH3X at {self.host}:{self.port}"
@@ -189,10 +224,13 @@ class FH3XModbusClient:
             await self._async_ensure_connected()
             await self._async_pace_request(device_id)
             try:
-                async with asyncio.timeout(self.timeout):
-                    response = await _read_holding()
-                    if response.isError() and allow_input_fallback:
-                        response = await _read_input()
+                response = await asyncio.wait_for(
+                    _read_holding(), timeout=self.timeout
+                )
+                if response.isError() and allow_input_fallback:
+                    response = await asyncio.wait_for(
+                        _read_input(), timeout=self.timeout
+                    )
             except (TimeoutError, OSError, ModbusException) as err:
                 self._close_transport()
                 if attempt < self.read_retries:
@@ -472,19 +510,24 @@ class FH3XModbusClient:
         await self._async_ensure_connected()
         await self._async_pace_request(device_id)
         try:
-            async with asyncio.timeout(self.timeout):
-                if len(registers) == 1:
-                    response = await self._client.write_register(
+            if len(registers) == 1:
+                response = await asyncio.wait_for(
+                    self._client.write_register(
                         address,
                         registers[0],
                         device_id=device_id,
-                    )
-                else:
-                    response = await self._client.write_registers(
+                    ),
+                    timeout=self.timeout,
+                )
+            else:
+                response = await asyncio.wait_for(
+                    self._client.write_registers(
                         address,
                         registers,
                         device_id=device_id,
-                    )
+                    ),
+                    timeout=self.timeout,
+                )
         except (TimeoutError, OSError, ModbusException) as err:
             self._close_transport()
             raise FH3XConnectionError(
