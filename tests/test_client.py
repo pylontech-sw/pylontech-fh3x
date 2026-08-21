@@ -11,6 +11,11 @@ from pylontech_fh3x import (
     FH3XModbusClient,
     FH3XProtocolError,
 )
+from pylontech_fh3x.constants import BMS_DEVICE_ID, PCS_DEVICE_ID
+from pylontech_fh3x.protocol import (
+    PCS_DEVICE_INFO_EXT_ADDRESS,
+    PCS_IDENTITY_ADDRESS,
+)
 
 
 class FakeResponse:
@@ -221,6 +226,33 @@ class TestFH3XModbusClient(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(transport.connected)
         self.assertEqual(transport.close_calls, 1)
+
+    async def test_snapshot_groups_pcs_reads_before_bms_reads(self) -> None:
+        transport = FakeTransport()
+        client = make_client(transport)
+
+        snapshot = await client.async_read_snapshot()
+
+        device_ids = [device_id for _, _, device_id in transport.holding_calls]
+        first_bms_read = device_ids.index(BMS_DEVICE_ID)
+        self.assertTrue(
+            all(device_id == PCS_DEVICE_ID for device_id in device_ids[:first_bms_read])
+        )
+        self.assertTrue(
+            all(device_id == BMS_DEVICE_ID for device_id in device_ids[first_bms_read:])
+        )
+        self.assertEqual(snapshot.identity.serial, "modbus-192.0.2.10:502")
+
+    async def test_snapshot_caches_identity_and_device_information(self) -> None:
+        transport = FakeTransport()
+        client = make_client(transport)
+
+        await client.async_read_snapshot()
+        await client.async_read_snapshot()
+
+        addresses = [address for address, _, _ in transport.holding_calls]
+        self.assertEqual(addresses.count(PCS_IDENTITY_ADDRESS), 1)
+        self.assertEqual(addresses.count(PCS_DEVICE_INFO_EXT_ADDRESS), 1)
 
 
 if __name__ == "__main__":
