@@ -13,6 +13,14 @@ from pylontech_fh3x import (
 )
 from pylontech_fh3x.constants import BMS_DEVICE_ID, PCS_DEVICE_ID
 from pylontech_fh3x.protocol import (
+    BMS_CELL_TEMPERATURE_OFFSET,
+    BMS_CELL_VOLTAGE_OFFSET,
+    BMS_MODULE_TEMPERATURE_OFFSET,
+    BMS_MODULE_VOLTAGE_OFFSET,
+    BMS_PILE_ADDRESS,
+    BMS_SYSTEM_ADDRESS,
+    BMS_SYSTEM_COUNT,
+    PCS_ACTIVE_POWER_CONTROL_ADDRESS,
     PCS_DEVICE_INFO_EXT_ADDRESS,
     PCS_IDENTITY_ADDRESS,
 )
@@ -47,6 +55,7 @@ class FakeTransport:
         self.connected = False
         self.connect_results: deque[bool | Exception] = deque([True])
         self.holding_results: deque[Any] = deque()
+        self.holding_by_address: dict[int, deque[Any]] = {}
         self.input_results: deque[Any] = deque()
         self.write_results: deque[Any] = deque()
         self.connect_calls = 0
@@ -79,6 +88,8 @@ class FakeTransport:
     ) -> Any:
         """Return the next holding-register response."""
         self.holding_calls.append((address, count, device_id))
+        if results := self.holding_by_address.get(address):
+            return self._take(results, FakeResponse([0] * count))
         return self._take(self.holding_results, FakeResponse([0] * count))
 
     async def read_input_registers(
@@ -104,7 +115,10 @@ class FakeTransport:
 
 
 def make_client(
-    transport: FakeTransport, *, read_retries: int = 0
+    transport: FakeTransport,
+    *,
+    read_retries: int = 0,
+    detailed_bms: bool = False,
 ) -> FH3XModbusClient:
     """Create a client with all artificial pacing disabled."""
     return FH3XModbusClient(
@@ -115,6 +129,7 @@ def make_client(
         device_switch_delay=0,
         read_retries=read_retries,
         read_retry_delay=0,
+        detailed_bms=detailed_bms,
         transport=transport,
     )
 
@@ -253,6 +268,41 @@ class TestFH3XModbusClient(unittest.IsolatedAsyncioTestCase):
         addresses = [address for address, _, _ in transport.holding_calls]
         self.assertEqual(addresses.count(PCS_IDENTITY_ADDRESS), 1)
         self.assertEqual(addresses.count(PCS_DEVICE_INFO_EXT_ADDRESS), 1)
+
+    async def test_optional_control_failure_does_not_break_snapshot(self) -> None:
+        transport = FakeTransport()
+        transport.holding_by_address[PCS_ACTIVE_POWER_CONTROL_ADDRESS] = deque(
+            [FakeResponse(error=True)]
+        )
+        client = make_client(transport)
+
+        snapshot = await client.async_read_snapshot()
+
+        self.assertEqual(snapshot.identity.serial, "modbus-192.0.2.10:502")
+        self.assertIn(
+            PCS_ACTIVE_POWER_CONTROL_ADDRESS,
+            [address for address, _, _ in transport.holding_calls],
+        )
+
+    async def test_detailed_bms_uses_reported_module_and_cell_counts(self) -> None:
+        transport = FakeTransport()
+        bms_registers = [0] * BMS_SYSTEM_COUNT
+        bms_registers[54] = 2
+        bms_registers[55] = 3
+        transport.holding_by_address[BMS_SYSTEM_ADDRESS] = deque(
+            [FakeResponse(bms_registers)]
+        )
+        client = make_client(transport, detailed_bms=True)
+
+        snapshot = await client.async_read_snapshot()
+
+        calls = {(address, count) for address, count, _ in transport.holding_calls}
+        self.assertIn((BMS_PILE_ADDRESS + BMS_MODULE_VOLTAGE_OFFSET, 2), calls)
+        self.assertIn((BMS_PILE_ADDRESS + BMS_MODULE_TEMPERATURE_OFFSET, 2), calls)
+        self.assertIn((BMS_PILE_ADDRESS + BMS_CELL_VOLTAGE_OFFSET, 3), calls)
+        self.assertIn((BMS_PILE_ADDRESS + BMS_CELL_TEMPERATURE_OFFSET, 3), calls)
+        self.assertIn("bms_module_02_voltage", snapshot.values)
+        self.assertIn("bms_cell_003_temperature", snapshot.values)
 
 
 if __name__ == "__main__":
