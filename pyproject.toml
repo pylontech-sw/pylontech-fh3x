@@ -14,10 +14,10 @@ dependencies = ["pymodbus==3.13.1"]
 
 [project.urls]
 Source = "https://github.com/pylontech-sw/pylontech-fh3x"
+Issues = "https://github.com/pylontech-sw/pylontech-fh3x/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-
